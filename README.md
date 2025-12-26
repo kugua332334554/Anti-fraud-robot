@@ -7,7 +7,8 @@ This is a Telegram anti-scam bot implemented using the PHP technology stack.  It
 感谢Star。感谢世界。
 
 # 管理员命令
-/shan + 投稿id
-删除已经通过的投稿与诈骗记录
+/shan + 投稿id 删除已经通过的投稿与诈骗记录
+
 /ban id 封建用户
+
 /unban 解除封禁用户
