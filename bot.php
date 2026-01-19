@@ -5,18 +5,24 @@ $db_host = 'localhost';
 $db_name = '数据库名';
 $db_user = '数据库密码';
 $db_pass = '数据库用户名';
-//bot管理员
-$admin_id = 777000;
-//bottoken
+
+// 管理员配置 多个用逗号分隔
+$admin_ids = '777000,123456,789012'; 
+$admin_ids_array = array_map('trim', explode(',', $admin_ids));
+
+// bottoken
 $botToken = "机器人Token";
-//bot用户名
-$bot_username = "机器人用户名t";
-//暂存频道
+// bot用户名
+$bot_username = "机器人用户名";
+
+// 暂存频道
 $channel_id = -1003610000355; 
 $channel_username = "username"; 
+
 // 审核通过后转发的频道
 $approved_channel_id = -1003660001159; 
 $approved_channel_username = "username"; 
+
 // 审核拒绝后转发的频道（设为'none'则不转发）
 $rejected_channel_id = '-1003687000097'; 
 $rejected_channel_username = 'username'; 
@@ -32,6 +38,34 @@ function getPdo() {
         error_log("DB Error: " . $e->getMessage());
         return null;
     }
+}
+
+// 检查用户是否是管理员
+function isAdmin($userId) {
+    global $admin_ids_array;
+    return in_array($userId, $admin_ids_array);
+}
+
+// 发送消息给所有管理员
+function sendMessageToAllAdmins($text, $parse_mode = 'HTML', $reply_markup = null) {
+    global $admin_ids_array;
+    $results = [];
+    
+    foreach ($admin_ids_array as $admin_id) {
+        $data = [
+            'chat_id' => $admin_id,
+            'text' => $text,
+            'parse_mode' => $parse_mode
+        ];
+        
+        if ($reply_markup) {
+            $data['reply_markup'] = json_encode($reply_markup);
+        }
+        
+        $results[$admin_id] = apiRequest('sendMessage', $data);
+    }
+    
+    return $results;
 }
 
 function apiRequest($method, $data) {
@@ -51,6 +85,38 @@ function apiRequest($method, $data) {
     $result = curl_exec($ch);
     curl_close($ch);
     return $result;
+}
+
+// 删除消息函数
+function deleteMessages($chat_id, $message_ids) {
+    global $botToken;
+    
+    $deleted_count = 0;
+    $message_id_array = is_array($message_ids) ? $message_ids : explode(',', $message_ids);
+    
+    foreach ($message_id_array as $msg_id) {
+        $url = "https://api.telegram.org/bot$botToken/deleteMessage";
+        $data = [
+            'chat_id' => $chat_id,
+            'message_id' => trim($msg_id)
+        ];
+        
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $data);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        $result = curl_exec($ch);
+        curl_close($ch);
+        
+        $result_json = json_decode($result, true);
+        if ($result_json && $result_json['ok']) {
+            $deleted_count++;
+        }
+    }
+    
+    return $deleted_count;
 }
 
 // send video
@@ -211,7 +277,7 @@ if ($message) {
     $userStep = $stmt->fetchColumn();
 
     // laru member
-if (isset($message['new_chat_members'])) {
+    if (isset($message['new_chat_members'])) {
         foreach ($message['new_chat_members'] as $newMember) {
             if ($newMember['username'] === $bot_username) {
                 $welcomeText = "<b>👋 感谢将我拉入本群！</b>\n\n🛡️ 为了能实时识别并拦截诈骗犯，请将我 <b>[设置为管理员]</b> 并赋予 <b>[删除消息]</b> 权限。\n\n这样我可以更快捷地守护群友的财产安全！";
@@ -225,132 +291,162 @@ if (isset($message['new_chat_members'])) {
         }
     }
 
-
     // balck
-if ($message && isset($message['chat']) && ($message['chat']['type'] === 'group' || $message['chat']['type'] === 'supergroup')) {
-    $fromId = $message['from']['id'];
-    $firstName = htmlspecialchars($message['from']['first_name']);
-    $msgId = $message['message_id'];
+    if ($message && isset($message['chat']) && ($message['chat']['type'] === 'group' || $message['chat']['type'] === 'supergroup')) {
+        $fromId = $message['from']['id'];
+        $firstName = htmlspecialchars($message['from']['first_name']);
+        $msgId = $message['message_id'];
 
-    $checkStmt = $pdo->prepare("SELECT id FROM fanzhasbzhapianfan WHERE target_id = ?");
-    $checkStmt->execute([$fromId]);
-    
-    if ($checkStmt->fetch()) {
-        // delete msg
-        apiRequest('deleteMessage', [
-            'chat_id' => $chatId,
-            'message_id' => $msgId
-        ]);
-
-        // send warning
-        $warningText = "⚠️ <b>群众里面有坏人！</b>\n\n👤 <b>用户：</b>{$firstName}\n🆔 <b>ID：</b><code>{$fromId}</code>\n\n该用户已被标记为诈骗。如有异议，请联系管理员申诉。";
-        apiRequest('sendMessage', [
-            'chat_id' => $chatId,
-            'text' => $warningText,
-            'parse_mode' => 'HTML'
-        ]);
-
-        //pkl
-        apiRequest('restrictChatMember', [
-            'chat_id' => $chatId,
-            'user_id' => $fromId,
-            'permissions' => json_encode([
-                'can_send_messages' => false,
-                'can_send_media_messages' => false,
-                'can_send_polls' => false,
-                'can_send_other_messages' => false,
-                'can_add_web_page_previews' => false,
-                'can_change_info' => false,
-                'can_invite_users' => false,
-                'can_pin_messages' => false
-            ])
-        ]);
+        $checkStmt = $pdo->prepare("SELECT id FROM fanzhasbzhapianfan WHERE target_id = ?");
+        $checkStmt->execute([$fromId]);
         
-        // tui
-        exit;
+        if ($checkStmt->fetch()) {
+            // delete msg
+            apiRequest('deleteMessage', [
+                'chat_id' => $chatId,
+                'message_id' => $msgId
+            ]);
+
+            // send warning
+            $warningText = "⚠️ <b>群众里面有坏人！</b>\n\n👤 <b>用户：</b>{$firstName}\n🆔 <b>ID：</b><code>{$fromId}</code>\n\n该用户已被标记为诈骗。如有异议，请联系管理员申诉。";
+            apiRequest('sendMessage', [
+                'chat_id' => $chatId,
+                'text' => $warningText,
+                'parse_mode' => 'HTML'
+            ]);
+
+            //pkl
+            apiRequest('restrictChatMember', [
+                'chat_id' => $chatId,
+                'user_id' => $fromId,
+                'permissions' => json_encode([
+                    'can_send_messages' => false,
+                    'can_send_media_messages' => false,
+                    'can_send_polls' => false,
+                    'can_send_other_messages' => false,
+                    'can_add_web_page_previews' => false,
+                    'can_change_info' => false,
+                    'can_invite_users' => false,
+                    'can_pin_messages' => false
+                ])
+            ]);
+            
+            // tui
+            exit;
+        }
     }
-}
 
-// common /ban /unban
-if (strpos($text, '/ban') === 0 || strpos($text, '/unban') === 0) {
-    if ($chatId == $admin_id) {
-        $parts = explode(' ', $text);
-        $action = $parts[0]; 
-        $targetUid = $parts[1] ?? null;
+    // common /ban /unban - 只有管理员可以使用
+    if (strpos($text, '/ban') === 0 || strpos($text, '/unban') === 0) {
+        if (isAdmin($chatId)) {
+            $parts = explode(' ', $text);
+            $action = $parts[0]; 
+            $targetUid = $parts[1] ?? null;
 
-        if ($targetUid && is_numeric($targetUid)) {
-            $status = ($action === '/ban') ? 1 : 0;
-            $statusText = ($action === '/ban') ? "封禁" : "解封";
-            
-            $stmt = $pdo->prepare("UPDATE fanzhauser SET is_banned = ? WHERE user_id = ?");
-            $stmt->execute([$status, $targetUid]);
-            
-            if ($stmt->rowCount() > 0) {
-                $resMsg = "✅ 已成功{$statusText}用户：<code>$targetUid</code>";
+            if ($targetUid && is_numeric($targetUid)) {
+                $status = ($action === '/ban') ? 1 : 0;
+                $statusText = ($action === '/ban') ? "封禁" : "解封";
                 
-                if ($status == 1) {
-                    // msg
-                    apiRequest('sendMessage', [
-                        'chat_id' => $targetUid,
-                        'text' => "⚠️ 您的投稿功能已被管理员封禁。"
-                    ]);
+                $stmt = $pdo->prepare("UPDATE fanzhauser SET is_banned = ? WHERE user_id = ?");
+                $stmt->execute([$status, $targetUid]);
+                
+                if ($stmt->rowCount() > 0) {
+                    $resMsg = "✅ 已成功{$statusText}用户：<code>$targetUid</code>";
+                    
+                    if ($status == 1) {
+                        // msg
+                        apiRequest('sendMessage', [
+                            'chat_id' => $targetUid,
+                            'text' => "⚠️ 您的投稿功能已被管理员封禁。"
+                        ]);
+                    } else {
+                        // msg
+                        apiRequest('sendMessage', [
+                            'chat_id' => $targetUid,
+                            'text' => "✅ 您的投稿功能已恢复，现在可以正常提交举报了。"
+                        ]);
+                    }
+                    
                 } else {
-                    // msg
-                    apiRequest('sendMessage', [
-                        'chat_id' => $targetUid,
-                        'text' => "✅ 您的投稿功能已恢复，现在可以正常提交举报了。"
-                    ]);
+                    $resMsg = "⚠️ 操作完成，但未发现数据变动。";
                 }
-                
             } else {
-                $resMsg = "⚠️ 操作完成，但未发现数据变动。";
+                $resMsg = "❌ 格式错误。用法：<code>/ban 123456</code> 或 <code>/unban 123456</code>";
             }
-        } else {
-            $resMsg = "❌ 格式错误。用法：<code>/ban 123456</code> 或 <code>/unban 123456</code>";
-        }
-        
-        apiRequest('sendMessage', [
-            'chat_id' => $chatId,
-            'text' => $resMsg,
-            'parse_mode' => 'HTML'
-        ]);
-        return; 
-    }
-}
-
-// mingl
-if (strpos($text, '/shan') === 0) {
-    if ($chatId == $admin_id) {
-        $parts = explode(' ', $text);
-        $targetAuditId = $parts[1] ?? null;
-
-        if ($targetAuditId) {
-            // sql
-            $stmt1 = $pdo->prepare("DELETE FROM fanzhasbzhapianfan WHERE audit_id = ?");
-            $stmt1->execute([$targetAuditId]);
-            $deletedCount = $stmt1->rowCount();
             
-            if ($deletedCount > 0) {
-                // msg
-                $stmt2 = $pdo->prepare("UPDATE fanzhaunshenhe SET status = 'deleted' WHERE id = ?");
-                $stmt2->execute([$targetAuditId]);
-                
-                $resMsg = "✅ 已成功删除审核编号为 <code>$targetAuditId</code> 的诈骗记录。";
-            } else {
-                $resMsg = "⚠️ 未找到编号为 <code>$targetAuditId</code> 的记录，请检查输入是否正确。";
-            }
-        } else {
-            $resMsg = "❌ 格式错误。用法：<code>/shan 审核编号</code>\n例如：<code>/shan a1b2c3</code>";
+            apiRequest('sendMessage', [
+                'chat_id' => $chatId,
+                'text' => $resMsg,
+                'parse_mode' => 'HTML'
+            ]);
+            return; 
         }
-        
-        apiRequest('sendMessage', [
-            'chat_id' => $chatId,
-            'text' => $resMsg,
-            'parse_mode' => 'HTML'
-        ]);
-        return; 
     }
-}
+
+    // 删除记录命令 - 只有管理员可以使用
+    if (strpos($text, '/shan') === 0) {
+        if (isAdmin($chatId)) {
+            $parts = explode(' ', $text);
+            $targetAuditId = $parts[1] ?? null;
+
+            if ($targetAuditId) {
+                // 1. 先获取审核记录信息
+                $stmt = $pdo->prepare("SELECT msg_ids, status FROM fanzhaunshenhe WHERE id = ?");
+                $stmt->execute([$targetAuditId]);
+                $auditRecord = $stmt->fetch(PDO::FETCH_ASSOC);
+                
+                if ($auditRecord) {
+                    // 2. 获取对应的黑名单记录（如果有）
+                    $stmt2 = $pdo->prepare("SELECT msg_ids FROM fanzhasbzhapianfan WHERE audit_id = ?");
+                    $stmt2->execute([$targetAuditId]);
+                    $blacklistRecord = $stmt2->fetch(PDO::FETCH_ASSOC);
+                    
+                    $deletedChannelMessages = 0;
+                    
+                    // 3. 删除暂存频道的消息
+                    if (!empty($auditRecord['msg_ids'])) {
+                        $deletedChannelMessages += deleteMessages($channel_id, $auditRecord['msg_ids']);
+                    }
+                    
+                    // 4. 如果审核已通过，删除通过频道的消息
+                    if ($auditRecord['status'] === 'approved' && $blacklistRecord && !empty($blacklistRecord['msg_ids']) && $approved_channel_id !== 'none') {
+                        $deletedChannelMessages += deleteMessages($approved_channel_id, $blacklistRecord['msg_ids']);
+                    }
+                    
+                    // 5. 删除数据库记录
+                    $stmt1 = $pdo->prepare("DELETE FROM fanzhasbzhapianfan WHERE audit_id = ?");
+                    $stmt1->execute([$targetAuditId]);
+                    $deletedBlacklistCount = $stmt1->rowCount();
+                    
+                    // 更新审核状态为已删除
+                    $stmt3 = $pdo->prepare("UPDATE fanzhaunshenhe SET status = 'deleted' WHERE id = ?");
+                    $stmt3->execute([$targetAuditId]);
+                    $updatedAuditCount = $stmt3->rowCount();
+                    
+                    if ($deletedBlacklistCount > 0 || $updatedAuditCount > 0) {
+                        $resMsg = "✅ 已成功删除审核编号为 <code>$targetAuditId</code> 的记录。\n";
+                        $resMsg .= "📊 删除统计：\n";
+                        $resMsg .= "• 频道消息删除数: $deletedChannelMessages 条\n";
+                        $resMsg .= "• 黑名单记录删除数: $deletedBlacklistCount 条\n";
+                        $resMsg .= "• 审核记录更新数: $updatedAuditCount 条";
+                    } else {
+                        $resMsg = "⚠️ 未找到编号为 <code>$targetAuditId</code> 的记录，请检查输入是否正确。";
+                    }
+                } else {
+                    $resMsg = "⚠️ 未找到编号为 <code>$targetAuditId</code> 的审核记录。";
+                }
+            } else {
+                $resMsg = "❌ 格式错误。用法：<code>/shan 审核编号</code>\n例如：<code>/shan a1b2c3</code>";
+            }
+            
+            apiRequest('sendMessage', [
+                'chat_id' => $chatId,
+                'text' => $resMsg,
+                'parse_mode' => 'HTML'
+            ]);
+            return; 
+        }
+    }
 
     if ($text === "/start") {
         // 处理/start
@@ -570,16 +666,8 @@ if (strpos($text, '/shan') === 0) {
                     $adminMessage .= "暂存证据链接: $channelLink"; 
                 }
 
-                $sendResult = json_decode(apiRequest('sendMessage', [
-                    'chat_id' => $admin_id,
-                    'text' => $adminMessage,
-                    'parse_mode' => 'Markdown',
-                    'reply_markup' => $adminKb
-                ]), true);
-                
-                if (!$sendResult || !$sendResult['ok']) {
-                    error_log("发送管理员通知失败: " . json_encode($sendResult));
-                }
+                // 发送给所有管理员
+                sendMessageToAllAdmins($adminMessage, 'Markdown', $adminKb);
                 
                 // clean
                 clearUserTempData($pdo, $chatId, $targetId, $mediaGroupId);
@@ -588,7 +676,6 @@ if (strpos($text, '/shan') === 0) {
             // 通知用户
             $resultText = "✅ 证据提交完成！\n\n";
             foreach ($submissionResults as $result) {
-                // ({$result['evidenceType']}) 
                 $resultText .= "• 审核编号: <code>{$result['auditId']}</code>\n";
             }
             $resultText .= "\n请等待管理员审核。";
@@ -682,7 +769,6 @@ if ($callback_query) {
     $cbId = $callback_query["id"];
     $cbFromId = $callback_query["from"]["id"];
 
-
     // 查询
     if ($data === "query") {
         $pdo->prepare("UPDATE fanzhauser SET step = 'wait_query_id' WHERE user_id = :uid")->execute([':uid' => $cbChatId]);
@@ -694,7 +780,7 @@ if ($callback_query) {
             'reply_markup' => ['inline_keyboard' => [[['text' => '⬅️ 返回', 'callback_data' => 'back_main']]]]
         ]);
     }
-// infir
+    // infir
     elseif ($data === "me") {
         $stmt = $pdo->prepare("SELECT created_at FROM fanzhauser WHERE user_id = ?");
         $stmt->execute([$cbChatId]);
@@ -748,18 +834,18 @@ if ($callback_query) {
         ]);
     }
     elseif ($data === "submit") {
-    $stmt = $pdo->prepare("SELECT is_banned FROM fanzhauser WHERE user_id = ?");
-    $stmt->execute([$cbChatId]);
-    $isBanned = $stmt->fetchColumn();
+        $stmt = $pdo->prepare("SELECT is_banned FROM fanzhauser WHERE user_id = ?");
+        $stmt->execute([$cbChatId]);
+        $isBanned = $stmt->fetchColumn();
 
-    if ($isBanned == 1) {
-        apiRequest('answerCallbackQuery', [
-            'callback_query_id' => $cbId,
-            'text' => '❌ 您的投稿功能已被限制，无法提交举报。',
-            'show_alert' => true
-        ]);
-        return;
-    }
+        if ($isBanned == 1) {
+            apiRequest('answerCallbackQuery', [
+                'callback_query_id' => $cbId,
+                'text' => '❌ 您的投稿功能已被限制，无法提交举报。',
+                'show_alert' => true
+            ]);
+            return;
+        }
         apiRequest('editMessageText', [
             'chat_id' => $cbChatId,
             'message_id' => $cbMsgId,
@@ -779,40 +865,108 @@ if ($callback_query) {
             'reply_markup' => ['inline_keyboard' => [[['text' => '取消', 'callback_data' => 'back_main']]]]
         ]);
     }
-//管理审核 - pass
-elseif (strpos($data, 'approve_') === 0) {
-    $aId = str_replace('approve_', '', $data);
-    
-    apiRequest('answerCallbackQuery', [
-        'callback_query_id' => $cbId,
-        'text' => '正在处理通过请求...',
-        'show_alert' => false
-    ]);
-    
-    try {
-        $stmt = $pdo->prepare("SELECT * FROM fanzhaunshenhe WHERE id = ? AND status = 'pending'");
-        $stmt->execute([$aId]);
-        $audit = $stmt->fetch(PDO::FETCH_ASSOC);
+    //管理审核 - pass
+    elseif (strpos($data, 'approve_') === 0) {
+        $aId = str_replace('approve_', '', $data);
+        
+        apiRequest('answerCallbackQuery', [
+            'callback_query_id' => $cbId,
+            'text' => '正在处理通过请求...',
+            'show_alert' => false
+        ]);
+        
+        try {
+            $stmt = $pdo->prepare("SELECT * FROM fanzhaunshenhe WHERE id = ? AND status = 'pending'");
+            $stmt->execute([$aId]);
+            $audit = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        if ($audit) {
-            $originalChannelLink = '';
-            if (!empty($audit['msg_ids'])) {
-                $msgIds = explode(',', $audit['msg_ids']);
-                if (!empty($msgIds[0])) {
-                    $originalChannelLink = generateChannelLink($msgIds[0], 'original');
+            if ($audit) {
+                $originalChannelLink = '';
+                if (!empty($audit['msg_ids'])) {
+                    $msgIds = explode(',', $audit['msg_ids']);
+                    if (!empty($msgIds[0])) {
+                        $originalChannelLink = generateChannelLink($msgIds[0], 'original');
+                    }
                 }
-            }
-            
-            if ($approved_channel_id !== 'none' && !empty($audit['msg_ids'])) {
-                // 转发消息
-                $forwardResult = forwardMessagesToChannel($audit['msg_ids'], $approved_channel_id);
                 
-                if ($forwardResult['ok'] && !empty($forwardResult['result'])) {
-                    // 获取转发后的消息ID
-                    $newMsgIds = implode(',', $forwardResult['result']);
+                if ($approved_channel_id !== 'none' && !empty($audit['msg_ids'])) {
+                    // 转发消息
+                    $forwardResult = forwardMessagesToChannel($audit['msg_ids'], $approved_channel_id);
+                    
+                    if ($forwardResult['ok'] && !empty($forwardResult['result'])) {
+                        // 获取转发后的消息ID
+                        $newMsgIds = implode(',', $forwardResult['result']);
 
-                    $insertStmt = $pdo->prepare("INSERT INTO fanzhasbzhapianfan (target_id, msg_ids, audit_id) VALUES (?, ?, ?)");
-                    $insertResult = $insertStmt->execute([$audit['target_id'], $newMsgIds, $aId]); //  $aId 
+                        $insertStmt = $pdo->prepare("INSERT INTO fanzhasbzhapianfan (target_id, msg_ids, audit_id) VALUES (?, ?, ?)");
+                        $insertResult = $insertStmt->execute([$audit['target_id'], $newMsgIds, $aId]);
+                        
+                        if ($insertResult) {
+                            // 更新审核状态
+                            $updateStmt = $pdo->prepare("UPDATE fanzhaunshenhe SET status = 'approved' WHERE id = ?");
+                            $updateResult = $updateStmt->execute([$aId]);
+                            
+                            if ($updateResult) {
+                                // 准备给管理员的消息
+                                $approveText = "<b>✅ 审核已通过并入库</b>\n\n";
+                                $approveText .= "审核编号: <code>$aId</code>\n";
+                                $approveText .= "目标ID: <code>{$audit['target_id']}</code>\n";
+                                $approveText .= "提交人ID: <code>{$audit['submitter_id']}</code>\n";
+                                
+                                // 生成通过频道的链接
+                                $approvedChannelLink = '';
+                                if (!empty($approved_channel_username) && $approved_channel_username !== 'none' && !empty($newMsgIds)) {
+                                    $approvedUsername = ltrim($approved_channel_username, '@');
+                                    $firstNewMsgId = explode(',', $newMsgIds)[0];
+                                    $approvedChannelLink = "https://t.me/{$approvedUsername}/{$firstNewMsgId}";
+                                    $approveText .= "公开证据链接: <a href=\"{$approvedChannelLink}\">{$approvedChannelLink}</a>\n";
+                                }
+                                
+                                if (!empty($originalChannelLink)) {
+                                    $approveText .= "原始证据链接: <a href=\"{$originalChannelLink}\">{$originalChannelLink}</a>\n";
+                                }
+                                
+                                $approveText .= "\n入库时间: " . date('Y-m-d H:i:s');
+                                
+                                // 编辑管理员消息
+                                apiRequest('editMessageText', [
+                                    'chat_id' => $cbChatId, 
+                                    'message_id' => $cbMsgId, 
+                                    'text' => $approveText,
+                                    'parse_mode' => 'HTML',
+                                    'disable_web_page_preview' => true
+                                ]);
+                                
+                                // 通知提交人
+                                $userMessage = "🎉 <b>您的举报已通过审核！</b>\n\n";
+                                $userMessage .= "审核编号: <code>$aId</code>\n";
+                                $userMessage .= "目标ID: <code>{$audit['target_id']}</code>\n\n";
+                                $userMessage .= "感谢您为反诈社区做出的贡献！\n\n";
+                                
+                                if (!empty($approvedChannelLink)) {
+                                    $userMessage .= "公开证据链接:\n<code>{$approvedChannelLink}</code>";
+                                }
+                                
+                                apiRequest('sendMessage', [
+                                    'chat_id' => $audit['submitter_id'], 
+                                    'text' => $userMessage,
+                                    'parse_mode' => 'HTML',
+                                    'disable_web_page_preview' => true
+                                ]);
+                                
+                                error_log("审核通过成功: $aId, 目标ID: {$audit['target_id']}, 转发到频道: $approved_channel_id");
+                            } else {
+                                throw new Exception("更新审核状态失败");
+                            }
+                        } else {
+                            throw new Exception("插入黑名单表失败");
+                        }
+                    } else {
+                        throw new Exception("转发到审核通过频道失败");
+                    }
+                } else {
+                    $msgIdsStr = $audit['msg_ids'];
+                    $insertStmt = $pdo->prepare("INSERT INTO fanzhasbzhapianfan (target_id, msg_ids) VALUES (?, ?)");
+                    $insertResult = $insertStmt->execute([$audit['target_id'], $msgIdsStr]);
                     
                     if ($insertResult) {
                         // 更新审核状态
@@ -820,28 +974,20 @@ elseif (strpos($data, 'approve_') === 0) {
                         $updateResult = $updateStmt->execute([$aId]);
                         
                         if ($updateResult) {
-                            // 准备给管理员的消息
                             $approveText = "<b>✅ 审核已通过并入库</b>\n\n";
                             $approveText .= "审核编号: <code>$aId</code>\n";
                             $approveText .= "目标ID: <code>{$audit['target_id']}</code>\n";
                             $approveText .= "提交人ID: <code>{$audit['submitter_id']}</code>\n";
+                            $approveText .= "媒体组ID: <code>{$audit['media_group_id']}</code>\n";
                             
-                            // 生成通过频道的链接
-                            $approvedChannelLink = '';
-                            if (!empty($approved_channel_username) && $approved_channel_username !== 'none' && !empty($newMsgIds)) {
-                                $approvedUsername = ltrim($approved_channel_username, '@');
-                                $firstNewMsgId = explode(',', $newMsgIds)[0];
-                                $approvedChannelLink = "https://t.me/{$approvedUsername}/{$firstNewMsgId}";
-                                $approveText .= "公开证据链接: <a href=\"{$approvedChannelLink}\">{$approvedChannelLink}</a>\n";
+                            if (!empty($msgIdsStr)) {
+                                $approveText .= "频道消息ID: <code>{$msgIdsStr}</code>\n";
                             }
                             
                             if (!empty($originalChannelLink)) {
-                                $approveText .= "原始证据链接: <a href=\"{$originalChannelLink}\">{$originalChannelLink}</a>\n";
+                                $approveText .= "证据链接: <a href=\"{$originalChannelLink}\">{$originalChannelLink}</a>";
                             }
                             
-                            $approveText .= "\n入库时间: " . date('Y-m-d H:i:s');
-                            
-                            // 编辑管理员消息
                             apiRequest('editMessageText', [
                                 'chat_id' => $cbChatId, 
                                 'message_id' => $cbMsgId, 
@@ -856,8 +1002,8 @@ elseif (strpos($data, 'approve_') === 0) {
                             $userMessage .= "目标ID: <code>{$audit['target_id']}</code>\n\n";
                             $userMessage .= "感谢您为反诈社区做出的贡献！\n\n";
                             
-                            if (!empty($approvedChannelLink)) {
-                                $userMessage .= "公开证据链接:\n<code>{$approvedChannelLink}</code>";
+                            if (!empty($originalChannelLink)) {
+                                $userMessage .= "证据链接:\n<code>{$originalChannelLink}</code>";
                             }
                             
                             apiRequest('sendMessage', [
@@ -867,175 +1013,115 @@ elseif (strpos($data, 'approve_') === 0) {
                                 'disable_web_page_preview' => true
                             ]);
                             
-                            error_log("审核通过成功: $aId, 目标ID: {$audit['target_id']}, 转发到频道: $approved_channel_id");
+                            error_log("审核通过成功（无转发）: $aId, 目标ID: {$audit['target_id']}");
                         } else {
                             throw new Exception("更新审核状态失败");
                         }
                     } else {
                         throw new Exception("插入黑名单表失败");
                     }
-                } else {
-                    throw new Exception("转发到审核通过频道失败");
                 }
             } else {
-                $msgIdsStr = $audit['msg_ids'];
-                $insertStmt = $pdo->prepare("INSERT INTO fanzhasbzhapianfan (target_id, msg_ids) VALUES (?, ?)");
-                $insertResult = $insertStmt->execute([$audit['target_id'], $msgIdsStr]);
-                
-                if ($insertResult) {
-                    // 更新审核状态
-                    $updateStmt = $pdo->prepare("UPDATE fanzhaunshenhe SET status = 'approved' WHERE id = ?");
-                    $updateResult = $updateStmt->execute([$aId]);
-                    
-                    if ($updateResult) {
-                        $approveText = "<b>✅ 审核已通过并入库</b>\n\n";
-                        $approveText .= "审核编号: <code>$aId</code>\n";
-                        $approveText .= "目标ID: <code>{$audit['target_id']}</code>\n";
-                        $approveText .= "提交人ID: <code>{$audit['submitter_id']}</code>\n";
-                        $approveText .= "媒体组ID: <code>{$audit['media_group_id']}</code>\n";
-                        
-                        if (!empty($msgIdsStr)) {
-                            $approveText .= "频道消息ID: <code>{$msgIdsStr}</code>\n";
-                        }
-                        
-                        if (!empty($originalChannelLink)) {
-                            $approveText .= "证据链接: <a href=\"{$originalChannelLink}\">{$originalChannelLink}</a>";
-                        }
-                        
-                        apiRequest('editMessageText', [
-                            'chat_id' => $cbChatId, 
-                            'message_id' => $cbMsgId, 
-                            'text' => $approveText,
-                            'parse_mode' => 'HTML',
-                            'disable_web_page_preview' => true
-                        ]);
-                        
-                        // 通知提交人
-                        $userMessage = "🎉 <b>您的举报已通过审核！</b>\n\n";
-                        $userMessage .= "审核编号: <code>$aId</code>\n";
-                        $userMessage .= "目标ID: <code>{$audit['target_id']}</code>\n\n";
-                        $userMessage .= "感谢您为反诈社区做出的贡献！\n\n";
-                        
-                        if (!empty($originalChannelLink)) {
-                            $userMessage .= "证据链接:\n<code>{$originalChannelLink}</code>";
-                        }
-                        
-                        apiRequest('sendMessage', [
-                            'chat_id' => $audit['submitter_id'], 
-                            'text' => $userMessage,
-                            'parse_mode' => 'HTML',
-                            'disable_web_page_preview' => true
-                        ]);
-                        
-                        error_log("审核通过成功（无转发）: $aId, 目标ID: {$audit['target_id']}");
-                    } else {
-                        throw new Exception("更新审核状态失败");
-                    }
-                } else {
-                    throw new Exception("插入黑名单表失败");
-                }
+                apiRequest('editMessageText', [
+                    'chat_id' => $cbChatId, 
+                    'message_id' => $cbMsgId, 
+                    'text' => "❌ <b>未找到待审核的记录或记录已被处理。</b>\n\nID: <code>$aId</code>",
+                    'parse_mode' => 'HTML'
+                ]);
+                error_log("未找到待审核记录: $aId");
             }
-        } else {
+        } catch (Exception $e) {
+            error_log("审核通过时出错: " . $e->getMessage());
+            
+            // 获取详细错误信息
+            $errorDetails = "❌ <b>处理通过请求时出错</b>\n\n";
+            $errorDetails .= "错误: " . htmlspecialchars($e->getMessage()) . "\n";
+            $errorDetails .= "审核编号: <code>$aId</code>\n";
+            $errorDetails .= "时间: " . date('Y-m-d H:i:s');
+            
             apiRequest('editMessageText', [
                 'chat_id' => $cbChatId, 
                 'message_id' => $cbMsgId, 
-                'text' => "❌ <b>未找到待审核的记录或记录已被处理。</b>\n\nID: <code>$aId</code>",
+                'text' => $errorDetails,
                 'parse_mode' => 'HTML'
             ]);
-            error_log("未找到待审核记录: $aId");
+            
+            // 再次回应错误
+            apiRequest('answerCallbackQuery', [
+                'callback_query_id' => $cbId,
+                'text' => '处理失败，请查看日志',
+                'show_alert' => true
+            ]);
         }
-    } catch (Exception $e) {
-        error_log("审核通过时出错: " . $e->getMessage());
+    }
+    // 管理审核 - 拒绝
+    elseif (strpos($data, 'reject_') === 0) {
+        $aId = str_replace('reject_', '', $data);
         
-        // 获取详细错误信息
-        $errorDetails = "❌ <b>处理通过请求时出错</b>\n\n";
-        $errorDetails .= "错误: " . htmlspecialchars($e->getMessage()) . "\n";
-        $errorDetails .= "审核编号: <code>$aId</code>\n";
-        $errorDetails .= "时间: " . date('Y-m-d H:i:s');
-        
-        apiRequest('editMessageText', [
-            'chat_id' => $cbChatId, 
-            'message_id' => $cbMsgId, 
-            'text' => $errorDetails,
-            'parse_mode' => 'HTML'
-        ]);
-        
-        // 再次回应错误
         apiRequest('answerCallbackQuery', [
             'callback_query_id' => $cbId,
-            'text' => '处理失败，请查看日志',
-            'show_alert' => true
+            'text' => '正在处理拒绝请求...',
+            'show_alert' => false
         ]);
-    }
-}
-// 管理审核 - 拒绝
-elseif (strpos($data, 'reject_') === 0) {
-    $aId = str_replace('reject_', '', $data);
-    
-    apiRequest('answerCallbackQuery', [
-        'callback_query_id' => $cbId,
-        'text' => '正在处理拒绝请求...',
-        'show_alert' => false
-    ]);
-    
-    try {
-        // 获取审核记录信息，提交人ID
-        $stmt = $pdo->prepare("SELECT * FROM fanzhaunshenhe WHERE id = ? AND status = 'pending'");
-        $stmt->execute([$aId]);
-        $audit = $stmt->fetch(PDO::FETCH_ASSOC);
         
-        if ($audit) {
-            if ($rejected_channel_id !== 'none' && !empty($audit['msg_ids'])) {
-                forwardMessagesToChannel($audit['msg_ids'], $rejected_channel_id);
-            }
+        try {
+            // 获取审核记录信息，提交人ID
+            $stmt = $pdo->prepare("SELECT * FROM fanzhaunshenhe WHERE id = ? AND status = 'pending'");
+            $stmt->execute([$aId]);
+            $audit = $stmt->fetch(PDO::FETCH_ASSOC);
             
-            $updateStmt = $pdo->prepare("UPDATE fanzhaunshenhe SET status = 'rejected' WHERE id = ?");
-            $result = $updateStmt->execute([$aId]);
-            
-            if ($result && $updateStmt->rowCount() > 0) {
-                apiRequest('editMessageText', [
-                    'chat_id' => $cbChatId, 
-                    'message_id' => $cbMsgId, 
-                    'text' => "❌ 已拒绝投稿。ID: <code>$aId</code>",
-                    'parse_mode' => 'HTML'
-                ]);
+            if ($audit) {
+                if ($rejected_channel_id !== 'none' && !empty($audit['msg_ids'])) {
+                    forwardMessagesToChannel($audit['msg_ids'], $rejected_channel_id);
+                }
                 
-                // 通知用户投稿被拒绝
-                $userMessage = "❌ 您的举报 (审核编号: <code>$aId</code>) 已被管理员拒绝。\n\n原因：证据不足或不符合要求。";
-                apiRequest('sendMessage', [
-                    'chat_id' => $audit['submitter_id'], 
-                    'text' => $userMessage,
-                    'parse_mode' => 'HTML'
-                ]);
+                $updateStmt = $pdo->prepare("UPDATE fanzhaunshenhe SET status = 'rejected' WHERE id = ?");
+                $result = $updateStmt->execute([$aId]);
                 
-                error_log("审核拒绝成功: $aId");
+                if ($result && $updateStmt->rowCount() > 0) {
+                    apiRequest('editMessageText', [
+                        'chat_id' => $cbChatId, 
+                        'message_id' => $cbMsgId, 
+                        'text' => "❌ 已拒绝投稿。ID: <code>$aId</code>",
+                        'parse_mode' => 'HTML'
+                    ]);
+                    
+                    // 通知用户投稿被拒绝
+                    $userMessage = "❌ 您的举报 (审核编号: <code>$aId</code>) 已被管理员拒绝。\n\n原因：证据不足或不符合要求。";
+                    apiRequest('sendMessage', [
+                        'chat_id' => $audit['submitter_id'], 
+                        'text' => $userMessage,
+                        'parse_mode' => 'HTML'
+                    ]);
+                    
+                    error_log("审核拒绝成功: $aId");
+                } else {
+                    apiRequest('editMessageText', [
+                        'chat_id' => $cbChatId, 
+                        'message_id' => $cbMsgId, 
+                        'text' => "❌ 更新审核状态失败。ID: <code>$aId</code>",
+                        'parse_mode' => 'HTML'
+                    ]);
+                    error_log("更新审核状态失败: $aId");
+                }
             } else {
                 apiRequest('editMessageText', [
                     'chat_id' => $cbChatId, 
                     'message_id' => $cbMsgId, 
-                    'text' => "❌ 更新审核状态失败。ID: <code>$aId</code>",
+                    'text' => "❌ 未找到待审核的记录或记录已被处理。ID: <code>$aId</code>",
                     'parse_mode' => 'HTML'
                 ]);
-                error_log("更新审核状态失败: $aId");
+                error_log("未找到待审核记录(拒绝): $aId");
             }
-        } else {
+        } catch (Exception $e) {
+            error_log("审核拒绝时出错: " . $e->getMessage());
             apiRequest('editMessageText', [
                 'chat_id' => $cbChatId, 
                 'message_id' => $cbMsgId, 
-                'text' => "❌ 未找到待审核的记录或记录已被处理。ID: <code>$aId</code>",
-                'parse_mode' => 'HTML'
+                'text' => "❌ 处理拒绝请求时出错: " . $e->getMessage()
             ]);
-            error_log("未找到待审核记录(拒绝): $aId");
         }
-    } catch (Exception $e) {
-        error_log("审核拒绝时出错: " . $e->getMessage());
-        apiRequest('editMessageText', [
-            'chat_id' => $cbChatId, 
-            'message_id' => $cbMsgId, 
-            'text' => "❌ 处理拒绝请求时出错: " . $e->getMessage()
-        ]);
     }
-}
     // 其他
     elseif ($data === "appeal_request") {
         apiRequest('answerCallbackQuery', [
@@ -1052,7 +1138,7 @@ elseif (strpos($data, 'reject_') === 0) {
             'text' => $appealText,
             'parse_mode' => 'Markdown',
             'reply_markup' => ['inline_keyboard' => [
-                [['text' => '👨‍💻 联系管理员', 'url' => "tg://user?id={$admin_id}"]],
+                [['text' => '👨‍💻 联系管理员', 'url' => "tg://user?id={$admin_ids_array[0]}"]],
                 [['text' => '⬅️ 返回', 'callback_data' => 'me']]
             ]]
         ]);
